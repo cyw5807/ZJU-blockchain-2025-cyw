@@ -1,6 +1,4 @@
-# ZJU-blockchain-course-2025
-
-⬆ 可以️修改成你自己的项目名。
+# ZJU-blockchain-2025-cyw
 
 > 第二次作业要求（以下内容提交时可以删除）：
 > 
