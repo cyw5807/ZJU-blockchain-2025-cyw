@@ -6,6 +6,9 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
+// 使用 LotteryNFT 合约类型代替单独的接口声明
+import "./LotteryNFT.sol";
+
 // Uncomment this line to use console.log
 // import "hardhat/console.sol";
 
@@ -43,8 +46,8 @@ contract EasyBet {
     mapping(uint256 => Activity) public activities; // 从项目ID到项目信息的映射
     uint256 public activityCounter; // 项目计数器
     
-    // 彩票NFT合约地址
-    ERC721 public lotteryNFT;
+    // 彩票NFT合约地址（使用 LotteryNFT 合约类型）
+    LotteryNFT public lotteryNFT;
     // ZJU ERC20 代币合约
     IERC20 public zjuToken;
     
@@ -57,10 +60,19 @@ contract EasyBet {
     // 记录每个选项的总投注金额
     mapping(uint256 => mapping(uint256 => uint256)) public choiceTotalBets;
 
+    // 记录每张票的投注金额
+    mapping(uint256 => uint256) public ticketBetAmount;
+
+    // 记录每张票所属活动
+    mapping(uint256 => uint256) public ticketActivity;
+
+    // 活动 -> 选项 -> 票ID 列表（便于结算或统计）
+    mapping(uint256 => mapping(uint256 => uint256[])) public activityChoiceTickets;
+
     constructor(address _lotteryNFTAddress, address _zjuTokenAddress) {
         owner = msg.sender; // 设置合约创建者为公证人
         activityCounter = 0;
-        lotteryNFT = ERC721(_lotteryNFTAddress);
+        lotteryNFT = LotteryNFT(_lotteryNFTAddress);
         zjuToken = IERC20(_zjuTokenAddress);
     }
 
@@ -132,12 +144,16 @@ contract EasyBet {
         // 更新选项投注总额
         choiceTotalBets[activityId][choiceIndex] += price;
         
-        // 这里可以调用NFT合约铸造彩票
-        // 为简化起见，我们使用一个模拟的tokenId
-        uint256 tokenId = uint256(keccak256(abi.encodePacked(activityId, choiceIndex, msg.sender, block.timestamp)));
-        
+        // 调用NFT合约铸造彩票，授权的NFT合约会把票铸到购买者地址
+        uint256 tokenId = lotteryNFT.mintTicketTo(msg.sender, activityId, choiceIndex, price);
+
+        // 记录票相关信息，便于后续结算
+        ticketBetAmount[tokenId] = price;
+        ticketActivity[tokenId] = activityId;
+        activityChoiceTickets[activityId][choiceIndex].push(tokenId);
+
         emit BetPlaced(tokenId, price, msg.sender, activityId, choiceIndex);
-        
+
         return tokenId;
     }
     
@@ -158,43 +174,46 @@ contract EasyBet {
     }
     
     /**
-     * @dev 领取奖金
-     * @param activityId 活动ID
+     * @dev 领取奖金（通过彩票 tokenId）
      * @param tokenId 彩票ID
-     * @param betAmount 投注金额
      */
-    function claimPrize(uint256 activityId, uint256 tokenId, uint256 betAmount) external {
-        Activity storage activity = activities[activityId];
+    function claimPrize(uint256 tokenId) external {
+        // 首先获取票信息并验证
+    (uint256 activityIdFromNFT, uint256 choiceIndex, ) = lotteryNFT.getTicketInfo(tokenId);
+
+        Activity storage activity = activities[activityIdFromNFT];
         require(!activity.isOpen, "Activity is still open");
-        require(!prizeClaimed[activityId][tokenId], "Prize already claimed");
-        
-        // 检查彩票是否存在（简化检查）
+        require(activity.winningChoice == choiceIndex, "This ticket did not win");
+        require(!prizeClaimed[activityIdFromNFT][tokenId], "Prize already claimed");
+
+        // 检查调用者是否是彩票的当前所有者
+        require(lotteryNFT.ownerOf(tokenId) == msg.sender, "Not the owner of the ticket");
+
+        // 获取投注金额（合约记录）
+        uint256 betAmount = ticketBetAmount[tokenId];
         require(betAmount > 0, "Invalid bet amount");
-        
-        // 检查调用者是否是彩票的当前所有者（简化检查）
-        // 在实际实现中需要与NFT合约交互验证所有权
-        
-        // 检查投注金额是否匹配获胜选项
-        require(betAmount <= choiceTotalBets[activityId][activity.winningChoice], "Invalid bet amount for winning choice");
-        
+
         // 标记奖金已被领取
-        prizeClaimed[activityId][tokenId] = true;
-        
+        prizeClaimed[activityIdFromNFT][tokenId] = true;
+
         // 计算奖金金额（按比例分配）
-        uint256 prizeAmount = (betAmount * activity.totalPool) / choiceTotalBets[activityId][activity.winningChoice];
-        
+        uint256 totalWinningChoiceBets = choiceTotalBets[activityIdFromNFT][choiceIndex];
+        require(totalWinningChoiceBets > 0, "No bets on winning choice");
+
+        uint256 prizeAmount = (betAmount * activity.totalPool) / totalWinningChoiceBets;
+
         // 确保奖金不超过奖池总额
         if (prizeAmount > activity.totalPool) {
             prizeAmount = activity.totalPool;
         }
-        
-    // 转账 ZJU 代币奖金给调用者
-    require(zjuToken.transfer(msg.sender, prizeAmount), "ZJU transfer failed");
-        
+
+        // 转账 ZJU 代币奖金给调用者
+        require(zjuToken.transfer(msg.sender, prizeAmount), "ZJU transfer failed");
+
         // 减少活动总奖池
         activity.totalPool -= prizeAmount;
-        
-        emit PrizeClaimed(activityId, tokenId, msg.sender, prizeAmount);
+
+        emit PrizeClaimed(activityIdFromNFT, tokenId, msg.sender, prizeAmount);
     }
 
     function helloworld() pure external returns(string memory) {

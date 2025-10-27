@@ -24,6 +24,11 @@ async function main() {
   const easyBet = await EasyBet.deploy(lotteryNFT.address, myERC20.address);
   await easyBet.deployed();
   console.log(`EasyBet deployed to: ${easyBet.address}`);
+  // 将 EasyBet 设置为 LotteryNFT 的授权铸造者
+  console.log(`Setting EasyBet as minter on LotteryNFT...`);
+  const tx = await lotteryNFT.setMinter(easyBet.address, true);
+  await tx.wait();
+  console.log(`EasyBet set as minter on LotteryNFT`);
   
   console.log("Deployment completed successfully!");
 }

@@ -45,21 +45,57 @@ contract LotteryNFT is ERC721, Ownable {
     function mintTicket(uint256 activityId, uint256 choiceIndex, uint256 price) external returns (uint256) {
         _tokenIds++;
         uint256 newTokenId = _tokenIds;
-        
+
         _mint(msg.sender, newTokenId);
-        
+
         // 存储彩票信息
         lotteryTickets[newTokenId] = LotteryTicket({
             activityId: activityId,
             choiceIndex: choiceIndex,
             price: price
         });
-        
+
         // 更新选项统计
         choiceCount[activityId][choiceIndex]++;
-        
+
         emit TicketMinted(newTokenId, activityId, choiceIndex, price);
-        
+
+        return newTokenId;
+    }
+
+    // 允许合约所有者授权某些合约/地址为铸造者
+    mapping(address => bool) public minters;
+
+    event MinterUpdated(address indexed account, bool allowed);
+
+    function setMinter(address account, bool allowed) external onlyOwner {
+        minters[account] = allowed;
+        emit MinterUpdated(account, allowed);
+    }
+
+    /**
+     * @dev 铸造彩票并指定接收者（仅授权的 minter 可调用）
+     */
+    function mintTicketTo(address to, uint256 activityId, uint256 choiceIndex, uint256 price) external returns (uint256) {
+        require(minters[msg.sender] || owner() == msg.sender, "Not authorized to mint");
+
+        _tokenIds++;
+        uint256 newTokenId = _tokenIds;
+
+        _mint(to, newTokenId);
+
+        // 存储彩票信息
+        lotteryTickets[newTokenId] = LotteryTicket({
+            activityId: activityId,
+            choiceIndex: choiceIndex,
+            price: price
+        });
+
+        // 更新选项统计
+        choiceCount[activityId][choiceIndex]++;
+
+        emit TicketMinted(newTokenId, activityId, choiceIndex, price);
+
         return newTokenId;
     }
     
@@ -119,8 +155,9 @@ contract LotteryNFT is ERC721, Ownable {
      * @dev 获取彩票信息
      * @param tokenId 彩票ID
      */
-    function getTicketInfo(uint256 tokenId) external view returns (LotteryTicket memory) {
-        return lotteryTickets[tokenId];
+    function getTicketInfo(uint256 tokenId) external view returns (uint256 activityId, uint256 choiceIndex, uint256 price) {
+        LotteryTicket memory t = lotteryTickets[tokenId];
+        return (t.activityId, t.choiceIndex, t.price);
     }
     
     /**

@@ -135,7 +135,10 @@ const BuyTicketPage: React.FC = () => {
             fetchActivities();
         } catch (error) {
             console.error("购买失败:", error);
-            alert('购买失败');
+            // 尝试解析 RPC 返回的详细错误信息
+            // 有时 error 对象里包含 data 或 message 字段
+            const detail = (error as any)?.data?.message || (error as any)?.message || JSON.stringify(error);
+            alert('购买失败: ' + detail);
         }
     };
 
