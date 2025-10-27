@@ -3,12 +3,11 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/Counters.sol";
 
 contract LotteryNFT is ERC721, Ownable {
-    using Counters for Counters.Counter;
     
-    Counters.Counter private _tokenIds;
+    // 添加_tokenIds计数器
+    uint256 private _tokenIds;
     
     // 彩票信息结构
     struct LotteryTicket {
@@ -32,7 +31,10 @@ contract LotteryNFT is ERC721, Ownable {
     event TicketDelisted(uint256 indexed tokenId);
     event TicketBought(uint256 indexed tokenId, address indexed buyer, uint256 price);
     
-    constructor() ERC721("LotteryTicket", "LTT") {}
+    constructor(address initialOwner) 
+        ERC721("LotteryTicket", "LTT") 
+        Ownable(initialOwner) 
+    {}
     
     /**
      * @dev 购买彩票并铸造NFT
@@ -41,8 +43,8 @@ contract LotteryNFT is ERC721, Ownable {
      * @param price 购买价格
      */
     function mintTicket(uint256 activityId, uint256 choiceIndex, uint256 price) external returns (uint256) {
-        _tokenIds.increment();
-        uint256 newTokenId = _tokenIds.current();
+        _tokenIds++;
+        uint256 newTokenId = _tokenIds;
         
         _mint(msg.sender, newTokenId);
         
@@ -67,7 +69,7 @@ contract LotteryNFT is ERC721, Ownable {
      * @param price 出售价格
      */
     function listTicket(uint256 tokenId, uint256 price) external {
-        require(_exists(tokenId), "Ticket does not exist");
+        require(_ownerOf(tokenId) != address(0), "Ticket does not exist");
         require(ownerOf(tokenId) == msg.sender, "You are not the owner of this ticket");
         
         ticketListedPrice[tokenId] = price;
@@ -80,7 +82,7 @@ contract LotteryNFT is ERC721, Ownable {
      * @param tokenId 彩票ID
      */
     function delistTicket(uint256 tokenId) external {
-        require(_exists(tokenId), "Ticket does not exist");
+        require(_ownerOf(tokenId) != address(0), "Ticket does not exist");
         require(ownerOf(tokenId) == msg.sender, "You are not the owner of this ticket");
         require(ticketListedPrice[tokenId] > 0, "Ticket is not listed");
         
@@ -94,7 +96,7 @@ contract LotteryNFT is ERC721, Ownable {
      * @param tokenId 彩票ID
      */
     function buyListedTicket(uint256 tokenId) external payable {
-        require(_exists(tokenId), "Ticket does not exist");
+        require(_ownerOf(tokenId) != address(0), "Ticket does not exist");
         require(ticketListedPrice[tokenId] > 0, "Ticket is not listed");
         require(msg.value == ticketListedPrice[tokenId], "Incorrect payment amount");
         require(ownerOf(tokenId) != msg.sender, "You cannot buy your own ticket");
@@ -134,6 +136,6 @@ contract LotteryNFT is ERC721, Ownable {
      * @param tokenId 彩票ID
      */
     function exists(uint256 tokenId) external view returns (bool) {
-        return _exists(tokenId);
+        return _ownerOf(tokenId) != address(0);
     }
 }
