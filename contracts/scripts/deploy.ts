@@ -19,9 +19,9 @@ async function main() {
   await myERC20.deployed();
   console.log(`MyERC20 deployed to: ${myERC20.address}`);
 
-  // 部署主合约，传入彩票NFT合约地址
+  // 部署主合约，传入彩票NFT合约地址和 ZJU 代币合约地址（EasyBet 构造函数需要两个地址）
   console.log("Deploying EasyBet contract...");
-  const easyBet = await EasyBet.deploy(lotteryNFT.address);
+  const easyBet = await EasyBet.deploy(lotteryNFT.address, myERC20.address);
   await easyBet.deployed();
   console.log(`EasyBet deployed to: ${easyBet.address}`);
   

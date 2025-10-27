@@ -15,7 +15,14 @@ contract MyERC20 is ERC20 {
      */
     function airdrop() external {
         require(claimedAirdropPlayerList[msg.sender] == false, "This user has claimed airdrop already");
-        _mint(msg.sender, 10000); // 发放10000个代币（考虑小数位）
+        _mint(msg.sender, 10000 * 10 ** decimals()); // 发放10000个代币（考虑小数位）
         claimedAirdropPlayerList[msg.sender] = true;
+    }
+
+    /**
+     * @dev 返回代币的小数位数
+     */
+    function decimals() public view virtual override returns (uint8) {
+        return 18; // 使用标准的18位小数
     }
 }

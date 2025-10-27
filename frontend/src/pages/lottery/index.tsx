@@ -11,9 +11,10 @@ const LotteryPage = () => {
     
     // 创建活动的表单状态
     const [newActivity, setNewActivity] = useState({
-        choices: [''] as string[],
+        choices: ['',''] as string[],
         prizeAmount: '' as string,
-        deadline: null as any
+        deadline: null as any,
+        description: '' as string
     })
 
     useEffect(() => {
@@ -39,11 +40,12 @@ const LotteryPage = () => {
             if (myERC20Contract && account) {
                 try {
                     const ab = await myERC20Contract.methods.balanceOf(account).call()
-                    setAccountBalance(ab)
+                    // ZJU token assumed to have 18 decimals; format for display
+                    setAccountBalance(web3.utils.fromWei(ab, 'ether'))
                     
                     // 检查用户是否已经领取过空投
-                    const claimed = await myERC20Contract.methods.claimedAirdropPlayerList(account).call()
-                    setAirdropClaimed(claimed)
+                        const claimed = await myERC20Contract.methods.claimedAirdropPlayerList(account).call()
+                        setAirdropClaimed(claimed)
                 } catch (e) {
                     console.error("Error getting account info:", e)
                 }
@@ -67,6 +69,11 @@ const LotteryPage = () => {
 
     // 添加新的选项输入框
     const addChoice = () => {
+        if (newActivity.choices.length >= 10) {
+            alert('选项上限为10个')
+            return
+        }
+
         setNewActivity({
             ...newActivity,
             choices: [...newActivity.choices, '']
@@ -93,6 +100,13 @@ const LotteryPage = () => {
         setNewActivity({
             ...newActivity,
             prizeAmount: e.target.value
+        })
+    }
+
+    const handleDescriptionChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+        setNewActivity({
+            ...newActivity,
+            description: e.target.value
         })
     }
 
@@ -162,6 +176,7 @@ const LotteryPage = () => {
             // 调用合约创建活动
             await lotteryContract.methods.createActivity(
                 validChoices,
+                newActivity.description,
                 web3.utils.toWei(newActivity.prizeAmount, 'ether'),
                 deadlineTimestamp // 使用显式转换后的数字
             ).send({
@@ -172,9 +187,10 @@ const LotteryPage = () => {
             
             // 重置表单
             setNewActivity({
-                choices: [''],
+                choices: ['',''],
                 prizeAmount: '',
-                deadline: null
+                deadline: null,
+                description: ''
             })
         } catch (error: any) {
             alert(error.message)
@@ -279,9 +295,12 @@ const LotteryPage = () => {
             <div style={{ border: '1px solid #ccc', padding: '16px', borderRadius: '4px', marginTop: '16px' }}>
                 <h2>创建新的竞猜活动</h2>
                 <div style={{ marginBottom: '16px' }}>
-                    <div>竞猜选项（至少2个）：</div>
+                    <div>竞猜选项（至少2个，最多10个）：</div>
                     {newActivity.choices.map((choice, index) => (
-                        <div key={index} style={{ display: 'flex', marginBottom: '8px' }}>
+                        <div key={index} style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
+                            <div style={{ width: '28px', marginRight: '8px', fontWeight: 600 }}>
+                                {"ABCDEFGHIJ"[index] || index + 1}.
+                            </div>
                             <input
                                 placeholder={`选项 ${index + 1}`}
                                 value={choice}
@@ -323,12 +342,21 @@ const LotteryPage = () => {
                 </div>
                 
                 <div style={{ marginBottom: '16px' }}>
-                    <div>奖金金额（ETH）：</div>
+                    <div>奖金金额（ZJU）：</div>
                     <input
                         placeholder="输入奖金金额"
                         value={newActivity.prizeAmount}
                         onChange={handlePrizeAmountChange}
                         style={{ width: '100%', padding: '8px' }}
+                    />
+                </div>
+                <div style={{ marginBottom: '16px' }}>
+                    <div>活动描述：</div>
+                    <textarea
+                        placeholder="输入活动描述（可选）"
+                        value={newActivity.description}
+                        onChange={handleDescriptionChange}
+                        style={{ width: '100%', padding: '8px', minHeight: '80px' }}
                     />
                 </div>
                 

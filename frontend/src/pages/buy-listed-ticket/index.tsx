@@ -1,10 +1,40 @@
-import React, { useState } from 'react';
-import { lotteryNFTContract, web3 } from "../../utils/contracts";
+import React, { useState, useEffect } from 'react';
+import { lotteryNFTContract, myERC20Contract, web3 } from "../../utils/contracts";
 
 const BuyListedTicketPage: React.FC = () => {
     const [account, setAccount] = useState<string>('');
     const [listedTickets, setListedTickets] = useState<any[]>([]);
     const [tokenId, setTokenId] = useState<string>('');
+    const [accountBalance, setAccountBalance] = useState<string>('0');
+
+    useEffect(() => {
+        const initCheckAccounts = async () => {
+            // @ts-ignore
+            const { ethereum } = window;
+            if (Boolean(ethereum && ethereum.isMetaMask)) {
+                const accounts = await web3.eth.getAccounts();
+                if (accounts && accounts.length) {
+                    setAccount(accounts[0]);
+                }
+            }
+        };
+
+        initCheckAccounts();
+    }, []);
+
+    useEffect(() => {
+        const getBalance = async () => {
+            if (myERC20Contract && account) {
+                try {
+                    const ab = await myERC20Contract.methods.balanceOf(account).call();
+                    setAccountBalance(web3.utils.fromWei(ab, 'ether'));
+                } catch (e) {
+                    console.error('获取余额失败', e);
+                }
+            }
+        };
+        if (account) getBalance();
+    }, [account]);
 
     // 获取挂单列表
     const fetchListedTickets = async () => {
@@ -29,9 +59,24 @@ const BuyListedTicketPage: React.FC = () => {
         }
 
         try {
-            // 调用合约购买挂单彩票方法
-            console.log("购买挂单彩票:", tokenId);
-            alert('购买成功');
+            // 购买使用 ZJU 代币：首先找到选中的挂单信息（seller, price）
+            const selected = listedTickets.find(t => String(t.id) === String(tokenId));
+            if (!selected) {
+                alert('未找到对应挂单，请刷新列表');
+                return;
+            }
+
+            if (!selected.seller || !selected.price) {
+                alert('挂单信息不完整，无法完成购买');
+                return;
+            }
+
+            const priceWei = web3.utils.toWei(String(selected.price), 'ether');
+            // 转账 ZJU 给卖家
+            await myERC20Contract.methods.transfer(selected.seller, priceWei).send({ from: account });
+
+            // 注意：NFT 的所有权转移需由卖家或交易合约完成；若后端/合约实现了原子交换，请调用对应合约方法。
+            alert('已向卖家转账 ZJU，请等待 NFT 转移或联系卖家完成交割');
         } catch (error) {
             console.error("购买失败:", error);
             alert('购买失败');
@@ -41,8 +86,9 @@ const BuyListedTicketPage: React.FC = () => {
     return (
         <div className="page">
             <h1>购买挂单出售的彩票</h1>
-            <div className="account-info">
-                <p>当前账户: {account}</p>
+                <div className="account-info">
+                <p>当前账户: {account || '未连接'}</p>
+                {account && <div>ZJU 余额: {accountBalance}</div>}
             </div>
             
             <div className="buy-listed-form">

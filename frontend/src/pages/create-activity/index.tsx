@@ -1,13 +1,47 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { lotteryContract, web3 } from "../../utils/contracts";
 
 const CreateActivityPage: React.FC = () => {
     const [account, setAccount] = useState<string>('');
     const [newActivity, setNewActivity] = useState({
-        choices: [''] as string[],
+        choices: ['',''] as string[],
         prizeAmount: '' as string,
-        deadline: null as any
+        deadline: null as any,
+        description: '' as string
     });
+
+    // 初始化钱包账户并监听 accountsChanged
+    useEffect(() => {
+        // @ts-ignore
+        const { ethereum } = window;
+        if (!ethereum) return;
+
+        const init = async () => {
+            try {
+                const accounts = await ethereum.request({ method: 'eth_accounts' });
+                if (accounts && accounts.length) setAccount(accounts[0]);
+            } catch (e) {
+                console.error('get eth_accounts failed', e);
+            }
+        }
+
+        init();
+
+        const handleAccountsChanged = (accounts: string[]) => {
+            if (accounts && accounts.length) setAccount(accounts[0]);
+            else setAccount('');
+        }
+
+        try {
+            ethereum.on('accountsChanged', handleAccountsChanged);
+        } catch (e) {
+            // 某些 provider 不支持 on/removeListener
+        }
+
+        return () => {
+            try { ethereum.removeListener('accountsChanged', handleAccountsChanged); } catch (e) {}
+        }
+    }, []);
 
     // 处理选项变化
     const handleChoiceChange = (index: number, value: string) => {
@@ -21,6 +55,11 @@ const CreateActivityPage: React.FC = () => {
 
     // 添加选项
     const addChoice = () => {
+        if (newActivity.choices.length >= 10) {
+            alert('选项上限为10个');
+            return;
+        }
+
         setNewActivity({
             ...newActivity,
             choices: [...newActivity.choices, '']
@@ -41,6 +80,10 @@ const CreateActivityPage: React.FC = () => {
             choices: newChoices
         });
     };
+
+    const handleDescriptionChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+        setNewActivity({ ...newActivity, description: e.target.value });
+    }
 
     // 处理奖金金额变化
     const handlePrizeAmountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -82,6 +125,11 @@ const CreateActivityPage: React.FC = () => {
         }
 
         // 验证输入
+        if (!newActivity.description || newActivity.description.trim() === '') {
+            alert('请输入活动描述');
+            return;
+        }
+
         if (newActivity.choices.length < 2) {
             alert('至少需要2个选项');
             return;
@@ -104,13 +152,26 @@ const CreateActivityPage: React.FC = () => {
         }
 
         try {
-            // 调用合约创建活动
-            // 注意：这需要根据实际合约接口进行调整
-            console.log("创建活动:", newActivity);
-            alert('活动创建成功');
-        } catch (error) {
+                // 调用合约创建活动（将活动写入链上）
+                const validChoices = newActivity.choices.filter(c => c.trim() !== '');
+                const deadlineTimestamp = Number(newActivity.deadline);
+
+                // prizeAmount 使用 ERC20（ZJU），前端以常见的 18 位小数为准，使用 toWei 转换
+                const prizeWei = web3.utils.toWei(String(newActivity.prizeAmount), 'ether');
+
+                console.log('调用合约 createActivity', { validChoices, description: newActivity.description, prizeWei, deadlineTimestamp });
+
+                await lotteryContract.methods.createActivity(
+                    validChoices,
+                    newActivity.description,
+                    prizeWei,
+                    deadlineTimestamp
+                ).send({ from: account });
+
+                alert('活动创建成功');
+        } catch (error: any) {
             console.error("创建活动失败:", error);
-            alert('创建活动失败');
+            alert(error?.message || '创建活动失败');
         }
     };
 
@@ -125,17 +186,24 @@ const CreateActivityPage: React.FC = () => {
                 <h2>创建新的竞猜活动</h2>
                 
                 <div className="form-group">
-                    <label>选项:</label>
+                    <label>活动描述（必填）：</label>
+                    <textarea value={newActivity.description} onChange={handleDescriptionChange} placeholder="请输入活动描述" style={{ width: '100%', minHeight: 80 }} />
+                </div>
+
+                <div className="form-group">
+                    <label>选项（至少2，最多10）：</label>
                     {newActivity.choices.map((choice, index) => (
-                        <div key={index} className="choice-input">
+                        <div key={index} className="choice-input" style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+                            <div style={{ width: 28, fontWeight: 600, marginRight: 8 }}>{"ABCDEFGHIJ"[index] || index + 1}.</div>
                             <input
                                 type="text"
                                 value={choice}
                                 onChange={(e) => handleChoiceChange(index, e.target.value)}
                                 placeholder={`选项 ${index + 1}`}
+                                style={{ flex: 1 }}
                             />
                             {newActivity.choices.length > 2 && (
-                                <button type="button" onClick={() => removeChoice(index)}>
+                                <button type="button" onClick={() => removeChoice(index)} style={{ marginLeft: 8 }}>
                                     删除
                                 </button>
                             )}

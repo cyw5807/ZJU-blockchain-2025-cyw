@@ -4,7 +4,7 @@ pragma solidity ^0.8.20;
 // Uncomment the line to use openzeppelin/ERC721,ERC20
 // You can use this dependency directly because it has been installed by TA already
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
-// import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 // Uncomment this line to use console.log
 // import "hardhat/console.sol";
@@ -30,6 +30,7 @@ contract EasyBet {
         address owner;              // 项目创建者（公证人）
         uint256 listedTimestamp;    // 创建时间戳
         string[] choices;           // 可选项
+        string description;         // 活动描述
         uint256 prizeAmount;        // 奖金总额（购买上限）
         uint256 deadline;           // 截止时间
         bool isOpen;                // 项目是否开放
@@ -44,6 +45,8 @@ contract EasyBet {
     
     // 彩票NFT合约地址
     ERC721 public lotteryNFT;
+    // ZJU ERC20 代币合约
+    IERC20 public zjuToken;
     
     // 每个活动的获奖彩票列表
     mapping(uint256 => uint256[]) public winningTickets;
@@ -54,10 +57,11 @@ contract EasyBet {
     // 记录每个选项的总投注金额
     mapping(uint256 => mapping(uint256 => uint256)) public choiceTotalBets;
 
-    constructor(address _lotteryNFTAddress) {
+    constructor(address _lotteryNFTAddress, address _zjuTokenAddress) {
         owner = msg.sender; // 设置合约创建者为公证人
         activityCounter = 0;
         lotteryNFT = ERC721(_lotteryNFTAddress);
+        zjuToken = IERC20(_zjuTokenAddress);
     }
 
     /**
@@ -68,6 +72,7 @@ contract EasyBet {
      */
     function createActivity(
         string[] memory choices,
+        string memory description,
         uint256 prizeAmount,
         uint256 deadline
     ) public onlyOwner returns (uint256) {
@@ -84,6 +89,7 @@ contract EasyBet {
         newActivity.owner = msg.sender;
         newActivity.listedTimestamp = block.timestamp;
         newActivity.choices = choices;
+        newActivity.description = description;
         newActivity.prizeAmount = prizeAmount;
         newActivity.deadline = deadline;
         newActivity.isOpen = true;
@@ -92,7 +98,7 @@ contract EasyBet {
         newActivity.remainingAmount = prizeAmount;
 
         // 触发事件
-        emit ActivityCreated(newActivityId, choices, prizeAmount, deadline);
+    emit ActivityCreated(newActivityId, choices, prizeAmount, deadline);
         
         return newActivityId;
     }
@@ -107,14 +113,17 @@ contract EasyBet {
         uint256 activityId,
         uint256 choiceIndex,
         uint256 price
-    ) external payable returns (uint256) {
+    ) external returns (uint256) {
         // 验证活动存在且开放
         Activity storage activity = activities[activityId];
         require(activity.isOpen, "Activity is not open");
         require(block.timestamp < activity.deadline, "Activity has ended");
         require(choiceIndex < activity.choices.length, "Invalid choice index");
-        require(msg.value == price, "Incorrect payment amount");
+        // 使用 ZJU ERC20 支付，调用方需先 approve 本合约转移相应金额
         require(price <= activity.remainingAmount, "Not enough remaining amount in the pool");
+        // transferFrom caller -> this contract
+        bool ok = zjuToken.transferFrom(msg.sender, address(this), price);
+        require(ok, "ZJU transfer failed");
         
         // 更新活动状态
         activity.totalPool += price;
@@ -179,8 +188,8 @@ contract EasyBet {
             prizeAmount = activity.totalPool;
         }
         
-        // 转账奖金给调用者
-        payable(msg.sender).transfer(prizeAmount);
+    // 转账 ZJU 代币奖金给调用者
+    require(zjuToken.transfer(msg.sender, prizeAmount), "ZJU transfer failed");
         
         // 减少活动总奖池
         activity.totalPool -= prizeAmount;
