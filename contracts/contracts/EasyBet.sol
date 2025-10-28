@@ -37,6 +37,7 @@ contract EasyBet {
         uint256 prizeAmount;        // 奖金总额（购买上限）
         uint256 deadline;           // 截止时间
         bool isOpen;                // 项目是否开放
+        bool cancelled;            // 项目是否被取消（发起者退奖）
         uint256 winningChoice;      // 获胜选项
         uint256 totalPool;          // 总奖池（实际购买金额总和）
         uint256 remainingAmount;    // 剩余可购买金额
@@ -56,6 +57,8 @@ contract EasyBet {
     
     // 记录奖金是否已被领取
     mapping(uint256 => mapping(uint256 => bool)) public prizeClaimed;
+    // 记录退款是否已被领取（活动被取消时使用）
+    mapping(uint256 => mapping(uint256 => bool)) public refundClaimed;
     
     // 记录每个选项的总投注金额
     mapping(uint256 => mapping(uint256 => uint256)) public choiceTotalBets;
@@ -172,49 +175,156 @@ contract EasyBet {
         
         emit ActivityClosed(activityId, winningChoice);
     }
-    
+
     /**
-     * @dev 领取奖金（通过彩票 tokenId）
-     * @param tokenId 彩票ID
+     * @dev 允许活动发起者或合约 owner 结算并设置获胜选项
      */
-    function claimPrize(uint256 tokenId) external {
-        // 首先获取票信息并验证
-    (uint256 activityIdFromNFT, uint256 choiceIndex, ) = lotteryNFT.getTicketInfo(tokenId);
+    function settleActivity(uint256 activityId, uint256 winningChoice) external {
+        Activity storage activity = activities[activityId];
+        require(activity.isOpen, "Activity is not open");
+        require(winningChoice < activity.choices.length, "Invalid winning choice");
+        // 允许活动创建者或合约 owner 发起结算
+        require(msg.sender == activity.owner || msg.sender == owner, "Not authorized to settle");
 
-        Activity storage activity = activities[activityIdFromNFT];
-        require(!activity.isOpen, "Activity is still open");
-        require(activity.winningChoice == choiceIndex, "This ticket did not win");
-        require(!prizeClaimed[activityIdFromNFT][tokenId], "Prize already claimed");
+        // 立即关闭活动并分配/退还金额（即时分配）
+        activity.isOpen = false;
+        activity.winningChoice = winningChoice;
 
-        // 检查调用者是否是彩票的当前所有者
-        require(lotteryNFT.ownerOf(tokenId) == msg.sender, "Not the owner of the ticket");
+        // 快照当前奖池和中奖选项总投注
+        uint256 snapshotPool = activity.totalPool;
+        uint256 totalWinningChoiceBets = choiceTotalBets[activityId][winningChoice];
 
-        // 获取投注金额（合约记录）
-        uint256 betAmount = ticketBetAmount[tokenId];
-        require(betAmount > 0, "Invalid bet amount");
-
-        // 标记奖金已被领取
-        prizeClaimed[activityIdFromNFT][tokenId] = true;
-
-        // 计算奖金金额（按比例分配）
-        uint256 totalWinningChoiceBets = choiceTotalBets[activityIdFromNFT][choiceIndex];
-        require(totalWinningChoiceBets > 0, "No bets on winning choice");
-
-        uint256 prizeAmount = (betAmount * activity.totalPool) / totalWinningChoiceBets;
-
-        // 确保奖金不超过奖池总额
-        if (prizeAmount > activity.totalPool) {
-            prizeAmount = activity.totalPool;
+        // 如果没有任何购买或奖池为空，直接触发事件并返回
+        if (snapshotPool == 0) {
+            emit ActivityClosed(activityId, winningChoice);
+            return;
         }
 
-        // 转账 ZJU 代币奖金给调用者
-        require(zjuToken.transfer(msg.sender, prizeAmount), "ZJU transfer failed");
+        // 如果没有人中奖 -> 对所有票进行退款
+        if (totalWinningChoiceBets == 0) {
+            // 遍历所有选项下的所有票进行退款
+            uint256 choicesLen = activity.choices.length;
+            for (uint256 ci = 0; ci < choicesLen; ci++) {
+                uint256[] storage tokens = activityChoiceTickets[activityId][ci];
+                for (uint256 ti = 0; ti < tokens.length; ti++) {
+                    uint256 tokenId = tokens[ti];
+                    if (refundClaimed[activityId][tokenId]) continue;
+                    uint256 betAmount = ticketBetAmount[tokenId];
+                    if (betAmount == 0) continue;
 
-        // 减少活动总奖池
-        activity.totalPool -= prizeAmount;
+                    address ticketOwner = lotteryNFT.ownerOf(tokenId);
 
-        emit PrizeClaimed(activityIdFromNFT, tokenId, msg.sender, prizeAmount);
+                    // 标记并清除记录（effects before interactions）
+                    refundClaimed[activityId][tokenId] = true;
+                    ticketBetAmount[tokenId] = 0;
+
+                    // 执行退款
+                    require(zjuToken.transfer(ticketOwner, betAmount), "ZJU transfer failed");
+
+                    // 减少活动总奖池（保持不为负）
+                    if (activity.totalPool >= betAmount) {
+                        activity.totalPool -= betAmount;
+                    } else {
+                        activity.totalPool = 0;
+                    }
+
+                    emit TicketRefunded(activityId, tokenId, ticketOwner, betAmount);
+                }
+            }
+
+            emit ActivityClosed(activityId, winningChoice);
+            return;
+        }
+
+        // 有中奖者 -> 按比例分配 snapshotPool 给所有中中奖彩票的当前持有者
+        uint256[] storage winningTokens = activityChoiceTickets[activityId][winningChoice];
+        for (uint256 i = 0; i < winningTokens.length; i++) {
+            uint256 tokenId = winningTokens[i];
+            if (prizeClaimed[activityId][tokenId]) continue;
+
+            uint256 betAmount = ticketBetAmount[tokenId];
+            if (betAmount == 0) continue;
+
+            address ticketOwner = lotteryNFT.ownerOf(tokenId);
+
+            // 计算分配金额（基于 snapshot）
+            uint256 prizeAmount = (betAmount * snapshotPool) / totalWinningChoiceBets;
+            if (prizeAmount > activity.totalPool) {
+                prizeAmount = activity.totalPool;
+            }
+
+            // 标记已发放（effects before interactions）
+            prizeClaimed[activityId][tokenId] = true;
+
+            // 转账
+            require(zjuToken.transfer(ticketOwner, prizeAmount), "ZJU transfer failed");
+
+            // 减少活动奖池
+            if (activity.totalPool >= prizeAmount) {
+                activity.totalPool -= prizeAmount;
+            } else {
+                activity.totalPool = 0;
+            }
+
+            emit PrizeClaimed(activityId, tokenId, ticketOwner, prizeAmount);
+        }
+
+        emit ActivityClosed(activityId, winningChoice);
     }
+
+    /**
+     * @dev 活动发起者可随时取消活动（退奖流程启动）
+     * 取消后，活动关闭并设置 cancelled = true，持票者可单独调用 claimRefund 提取退款
+     */
+    function cancelActivity(uint256 activityId) external {
+        Activity storage activity = activities[activityId];
+        require(activity.isOpen, "Activity is not open");
+        require(msg.sender == activity.owner || msg.sender == owner, "Not authorized to cancel");
+
+        activity.isOpen = false;
+        activity.cancelled = true;
+
+        // 立即对所有票进行退款（避免依赖外部调用 claimRefund）
+        uint256 choicesLen = activity.choices.length;
+        for (uint256 ci = 0; ci < choicesLen; ci++) {
+            uint256[] storage tokens = activityChoiceTickets[activityId][ci];
+            for (uint256 ti = 0; ti < tokens.length; ti++) {
+                uint256 tokenId = tokens[ti];
+                if (refundClaimed[activityId][tokenId]) continue;
+                uint256 betAmount = ticketBetAmount[tokenId];
+                if (betAmount == 0) continue;
+
+                address ticketOwner = lotteryNFT.ownerOf(tokenId);
+
+                // 标记并清除记录（effects before interactions）
+                refundClaimed[activityId][tokenId] = true;
+                ticketBetAmount[tokenId] = 0;
+
+                // 执行退款
+                require(zjuToken.transfer(ticketOwner, betAmount), "ZJU transfer failed");
+
+                // 减少活动总奖池（保持不为负）
+                if (activity.totalPool >= betAmount) {
+                    activity.totalPool -= betAmount;
+                } else {
+                    activity.totalPool = 0;
+                }
+
+                emit TicketRefunded(activityId, tokenId, ticketOwner, betAmount);
+            }
+        }
+
+        emit ActivityClosed(activityId, type(uint256).max); // 使用特殊值表示被取消（可选）
+    }
+    
+    // claimPrize removed: prizes are distributed immediately in settleActivity
+
+    /**
+     * @dev 如果活动被取消，持票者可以调用此函数提取已支付的投注金额退款
+     */
+    event TicketRefunded(uint256 indexed activityId, uint256 indexed tokenId, address indexed owner, uint256 amount);
+
+    // claimRefund removed: refunds are distributed immediately in cancelActivity
 
     function helloworld() pure external returns(string memory) {
         return "hello world";

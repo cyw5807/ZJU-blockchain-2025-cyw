@@ -41,6 +41,25 @@ const BuyListedTicketPage: React.FC = () => {
         try {
             // 调用合约获取挂单列表
             console.log("获取挂单列表");
+            if (!lotteryNFTContract) return;
+
+            // getAllListedTickets 返回 uint256[]
+            const ids: string[] = await lotteryNFTContract.methods.getAllListedTickets().call();
+            const listed: any[] = [];
+            for (const idStr of ids) {
+                try {
+                    const id = Number(idStr);
+                    // 获取挂单价格（wei）
+                    const priceWei = await lotteryNFTContract.methods.getTicketListedPrice(id).call();
+                    const price = web3.utils.fromWei(String(priceWei), 'ether');
+                    // 获取卖家地址
+                    const seller = await lotteryNFTContract.methods.ownerOf(id).call();
+                    listed.push({ id, price, seller });
+                } catch (e) {
+                    console.warn('读取挂单项失败', idStr, e);
+                }
+            }
+            setListedTickets(listed);
         } catch (e) {
             console.error("获取挂单列表失败:", e);
         }
@@ -72,11 +91,33 @@ const BuyListedTicketPage: React.FC = () => {
             }
 
             const priceWei = web3.utils.toWei(String(selected.price), 'ether');
-            // 转账 ZJU 给卖家
-            await myERC20Contract.methods.transfer(selected.seller, priceWei).send({ from: account });
 
-            // 注意：NFT 的所有权转移需由卖家或交易合约完成；若后端/合约实现了原子交换，请调用对应合约方法。
-            alert('已向卖家转账 ZJU，请等待 NFT 转移或联系卖家完成交割');
+            // 使用合约原子的 ERC20 购买流程：先 approve 本合约（lotteryNFTContract）花费 priceWei，然后调用 buyListedTicketWithERC20
+            if (!myERC20Contract || !lotteryNFTContract) {
+                alert('合约未加载');
+                return;
+            }
+
+            const spender = lotteryNFTContract.options.address;
+            try {
+                // approve 本合约从买家转账给卖家
+                await myERC20Contract.methods.approve(spender, priceWei).send({ from: account });
+            } catch (e) {
+                console.error('approve 失败', e);
+                alert('代币授权失败');
+                return;
+            }
+
+            try {
+                await lotteryNFTContract.methods.buyListedTicketWithERC20(myERC20Contract.options.address, tokenId).send({ from: account });
+                alert('购买成功，NFT 已转入您的账户（若链上交易成功）');
+                // 刷新挂单列表
+                await fetchListedTickets();
+            } catch (e) {
+                console.error('购买失败', e);
+                // e 可能是任意类型，使用 any 以安全访问 message，或转为字符串
+                alert('购买失败：' + (((e as any)?.message) || String(e)));
+            }
         } catch (error) {
             console.error("购买失败:", error);
             alert('购买失败');
