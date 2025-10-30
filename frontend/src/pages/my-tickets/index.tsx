@@ -7,6 +7,8 @@ const MyTicketsPage: React.FC = () => {
     const [accountBalance, setAccountBalance] = useState<string>('0');
     const [airdropClaimed, setAirdropClaimed] = useState<boolean>(false);
 
+    const [processingTicketId, setProcessingTicketId] = useState<number | null>(null);
+
     useEffect(() => {
         const initCheckAccounts = async () => {
             // @ts-ignore
@@ -68,166 +70,201 @@ const MyTicketsPage: React.FC = () => {
         }
     };
 
-    useEffect(() => {
-        const fetchMyTickets = async () => {
-            if (lotteryNFTContract && account) {
+    const handleDelistTicket = async (tokenId: number) => {
+        if (!account || !lotteryNFTContract) {
+            alert('请确保钱包已连接且合约已加载');
+            return;
+        }
+        
+        setProcessingTicketId(tokenId); // 设置正在处理的状态，用于禁用按钮
+
+        try {
+            // 调用智能合约的 delistTicket 方法
+            await lotteryNFTContract.methods.delistTicket(tokenId).send({ from: account });
+            alert(`彩票 #${tokenId} 已成功取消挂单!`);
+            
+            // 成功后，刷新彩票列表以更新UI
+            await fetchMyTickets();
+
+        } catch (error: any) {
+            console.error('取消挂单失败:', error);
+            alert(error.message || '取消挂单失败');
+        } finally {
+            setProcessingTicketId(null); // 无论成功或失败，都清除处理状态
+        }
+    };
+
+    const fetchMyTickets = async () => {
+        if (lotteryNFTContract && account) {
+            try {
+                console.log("获取用户持有的彩票");
+
+                const tickets: any[] = [];
+
+                // 先按 create-activity 的逻辑加载并缓存所有活动信息，以避免对同一活动重复 RPC 调用
+                const activityMap: Record<number, any> = {};
                 try {
-                    console.log("获取用户持有的彩票");
-
-                    const tickets: any[] = [];
-
-                    // 先按 create-activity 的逻辑加载并缓存所有活动信息，以避免对同一活动重复 RPC 调用
-                    const activityMap: Record<number, any> = {};
-                    try {
-                        const counter = await lotteryContract.methods.activityCounter().call();
-                        const n = Number(counter || 0);
-                        if (n > 0) {
-                            const ids = Array.from({ length: n }, (_, i) => i + 1);
-                            const raws = await Promise.all(ids.map(id => lotteryContract.methods.getActivity(id).call().catch((e: any) => { console.warn('getActivity error', id, e); return null; })));
-                            await Promise.all(raws.map(async (raw: any, idx: number) => {
-                                const id = ids[idx];
-                                if (!raw) return;
-                                const choices: string[] = raw.choices || [];
-                                // 获取每个选项的总投注（wei）
-                                const choiceTotalsRaw = await Promise.all(choices.map((_: any, ci: number) =>
-                                    lotteryContract.methods.getChoiceTotalBets(id, ci).call().catch((e: any) => { console.warn('getChoiceTotalBets failed', id, ci, e); return '0'; })
-                                ));
-                                activityMap[id] = { rawAct: raw, choiceTotalsRaw };
-                            }));
-                        }
-                    } catch (e) {
-                        console.warn('加载活动缓存失败', e);
+                    const counter = await lotteryContract.methods.activityCounter().call();
+                    const n = Number(counter || 0);
+                    if (n > 0) {
+                        const ids = Array.from({ length: n }, (_, i) => i + 1);
+                        const raws = await Promise.all(ids.map(id => lotteryContract.methods.getActivity(id).call().catch((e: any) => { console.warn('getActivity error', id, e); return null; })));
+                        await Promise.all(raws.map(async (raw: any, idx: number) => {
+                            const id = ids[idx];
+                            if (!raw) return;
+                            const choices: string[] = raw.choices || [];
+                            // 获取每个选项的总投注（wei）
+                            const choiceTotalsRaw = await Promise.all(choices.map((_: any, ci: number) =>
+                                lotteryContract.methods.getChoiceTotalBets(id, ci).call().catch((e: any) => { console.warn('getChoiceTotalBets failed', id, ci, e); return '0'; })
+                            ));
+                            activityMap[id] = { rawAct: raw, choiceTotalsRaw };
+                        }));
                     }
-
-                    // 首先尝试通过 Transfer 事件枚举（高效且常用）
-                    let tokenIds: number[] = [];
-                    try {
-                        const events = await lotteryNFTContract.getPastEvents('Transfer', {
-                            filter: { to: account },
-                            fromBlock: 0,
-                            toBlock: 'latest'
-                        });
-                        tokenIds = events.map((ev: any) => Number(ev.returnValues.tokenId));
-                        tokenIds = Array.from(new Set(tokenIds));
-                    } catch (e) {
-                        console.warn('读取 Transfer 事件失败，后续将使用 exists() 扫描', e);
-                        tokenIds = [];
-                    }
-
-                    // 如果没有从事件中找到票，则回退到逐个扫描 exists()
-                    if (tokenIds.length === 0) {
-                        const MAX_SCAN = 500; // 安全上限，避免无限循环
-                        for (let id = 1; id <= MAX_SCAN; id++) {
-                            try {
-                                const exists = await lotteryNFTContract.methods.exists(id).call();
-                                if (exists) tokenIds.push(id);
-                            } catch (e) {
-                                // 如果合约没有 exists 方法，直接跳出
-                                console.warn('exists() 检查失败或不存在方法，停止扫描', e);
-                                break;
-                            }
-                        }
-                    }
-
-                    // 通过 ownerOf 和 getTicketInfo 过滤出真正属于当前账户的票
-                    for (const tid of tokenIds) {
-                        try {
-                            const owner = await lotteryNFTContract.methods.ownerOf(tid).call();
-                            if (owner.toLowerCase() !== account.toLowerCase()) continue;
-
-                            // getTicketInfo 返回 (activityId, choiceIndex, price)
-                            const info = await lotteryNFTContract.methods.getTicketInfo(tid).call();
-                            // info may be an array-like or object depending on ABI output
-                            const activityId = Number(info[0] ?? info.activityId ?? 0);
-                            const choiceIndex = Number(info[1] ?? info.choiceIndex ?? 0);
-                            const priceRaw = String(info[2] ?? info.price ?? '0'); // wei string
-                            const price = web3.utils.fromWei(String(priceRaw), 'ether');
-
-                            // 读取已缓存的活动信息以显示描述与选项内容，并获取活动状态（是否已开奖/取消）
-                            let activityDescription = '';
-                            let activityChoices: string[] = [];
-                            let activityIsOpen = true;
-                            let activityCancelled = false;
-                            let activityWinningChoice: any = null;
-                            let precomputedPrize = null; // in ether string if computed
-                            try {
-                                const cached = activityMap[activityId];
-                                const rawAct = cached?.rawAct ?? null;
-                                const choiceTotalsRaw = cached?.choiceTotalsRaw ?? null;
-                                if (rawAct) {
-                                    activityDescription = rawAct?.description || '';
-                                    activityChoices = rawAct?.choices || [];
-                                    activityIsOpen = rawAct?.isOpen ?? true;
-                                    activityCancelled = rawAct?.cancelled ?? false;
-                                    activityWinningChoice = rawAct?.winningChoice;
-
-                                    // 如果活动已结束且有 winningChoice（可能为 0），且当前票的选项等于中奖选项，尝试计算该票的中奖金额
-                                    if (!activityIsOpen && activityWinningChoice !== undefined && activityWinningChoice !== null && activityWinningChoice !== '') {
-                                        try {
-                                            // 只为属于中奖选项的票计算金额
-                                            if (Number(activityWinningChoice) === choiceIndex) {
-                                                const totalWinning = (choiceTotalsRaw && choiceTotalsRaw[Number(activityWinningChoice)]) || '0';
-                                                const totalWinningBN = web3.utils.toBN(totalWinning || '0');
-                                                // 使用活动的总额度(prizeAmount)减去剩余额度(remainingAmount)作为总奖池（已售出额度）
-                                                const prizeAmountBN = web3.utils.toBN(rawAct?.prizeAmount || rawAct?.totalPool || '0');
-                                                const remainingBN = web3.utils.toBN(rawAct?.remainingAmount || '0');
-                                                let totalPoolBN = prizeAmountBN.sub(remainingBN);
-                                                if (totalPoolBN.isNeg && totalPoolBN.lt(web3.utils.toBN('0'))) totalPoolBN = web3.utils.toBN('0');
-                                                const priceBN = web3.utils.toBN(priceRaw || '0');
-                                                let prizeBN = web3.utils.toBN('0');
-                                                if (!totalWinningBN.isZero()) {
-                                                    // 中奖金额 = 本彩票投注额 / 正确选项投注额 * 总奖池（已售出额度）
-                                                    prizeBN = priceBN.mul(totalPoolBN).div(totalWinningBN);
-                                                }
-                                                precomputedPrize = web3.utils.fromWei(prizeBN, 'ether');
-                                            }
-                                        } catch (e) {
-                                            console.warn('计算中奖金额失败', activityId, e);
-                                        }
-                                    }
-                                } else {
-                                    // 如果没有缓存的活动，回退到较慢的 RPC 获取（保持兼容）
-                                    const raw = await lotteryContract.methods.getActivity(activityId).call();
-                                    activityDescription = raw?.description || '';
-                                    activityChoices = raw?.choices || [];
-                                    activityIsOpen = raw?.isOpen ?? true;
-                                    activityCancelled = raw?.cancelled ?? false;
-                                    activityWinningChoice = raw?.winningChoice;
-                                }
-                            } catch (e) {
-                                console.warn('读取活动信息失败', activityId, e);
-                            }
-
-                            const selectedOptionLabel = String.fromCharCode(65 + choiceIndex) || String(choiceIndex + 1);
-                            const selectedOptionContent = activityChoices[choiceIndex] || '';
-
-                            tickets.push({
-                                id: tid,
-                                price,
-                                priceRaw,
-                                activityId,
-                                activityDescription,
-                                choiceIndex,
-                                choiceLabel: selectedOptionLabel,
-                                choiceContent: selectedOptionContent,
-                                isOpen: activityIsOpen,
-                                cancelled: activityCancelled,
-                                winningChoice: activityWinningChoice,
-                                prize: precomputedPrize
-                            });
-                        } catch (e) {
-                            console.warn('处理 tokenId 失败', tid, e);
-                            continue;
-                        }
-                    }
-
-                    setMyTickets(tickets);
                 } catch (e) {
-                    console.error("获取彩票信息失败:", e);
+                    console.warn('加载活动缓存失败', e);
                 }
-            }
-        };
 
+                // 首先尝试通过 Transfer 事件枚举（高效且常用）
+                let tokenIds: number[] = [];
+                try {
+                    const events = await lotteryNFTContract.getPastEvents('Transfer', {
+                        filter: { to: account },
+                        fromBlock: 0,
+                        toBlock: 'latest'
+                    });
+                    tokenIds = events.map((ev: any) => Number(ev.returnValues.tokenId));
+                    tokenIds = Array.from(new Set(tokenIds));
+                } catch (e) {
+                    console.warn('读取 Transfer 事件失败，后续将使用 exists() 扫描', e);
+                    tokenIds = [];
+                }
+
+                // 如果没有从事件中找到票，则回退到逐个扫描 exists()
+                if (tokenIds.length === 0) {
+                    const MAX_SCAN = 500; // 安全上限，避免无限循环
+                    for (let id = 1; id <= MAX_SCAN; id++) {
+                        try {
+                            const exists = await lotteryNFTContract.methods.exists(id).call();
+                            if (exists) tokenIds.push(id);
+                        } catch (e) {
+                            // 如果合约没有 exists 方法，直接跳出
+                            console.warn('exists() 检查失败或不存在方法，停止扫描', e);
+                            break;
+                        }
+                    }
+                }
+
+                // 通过 ownerOf 和 getTicketInfo 过滤出真正属于当前账户的票
+                for (const tid of tokenIds) {
+                    try {
+                        const owner = await lotteryNFTContract.methods.ownerOf(tid).call();
+                        if (owner.toLowerCase() !== account.toLowerCase()) continue;
+
+                        // getTicketInfo 返回 (activityId, choiceIndex, price)
+                        const info = await lotteryNFTContract.methods.getTicketInfo(tid).call();
+                        
+                        const listedPriceRaw = await lotteryNFTContract.methods.ticketListedPrice(tid).call();
+                        const isListed = web3.utils.toBN(listedPriceRaw).gt(web3.utils.toBN('0'));
+                        const listedPrice = isListed ? web3.utils.fromWei(listedPriceRaw, 'ether') : null;
+
+                        // info may be an array-like or object depending on ABI output
+                        const activityId = Number(info[0] ?? info.activityId ?? 0);
+                        const choiceIndex = Number(info[1] ?? info.choiceIndex ?? 0);
+                        const priceRaw = String(info[2] ?? info.price ?? '0'); // wei string
+                        const price = web3.utils.fromWei(String(priceRaw), 'ether');
+
+                        // 读取已缓存的活动信息以显示描述与选项内容，并获取活动状态（是否已开奖/取消）
+                        let activityDescription = '';
+                        let activityChoices: string[] = [];
+                        let activityIsOpen = true;
+                        let activityCancelled = false;
+                        let activityWinningChoice: any = null;
+                        let precomputedPrize = null; // in ether string if computed
+                        try {
+                            const cached = activityMap[activityId];
+                            const rawAct = cached?.rawAct ?? null;
+                            const choiceTotalsRaw = cached?.choiceTotalsRaw ?? null;
+                            if (rawAct) {
+                                activityDescription = rawAct?.description || '';
+                                activityChoices = rawAct?.choices || [];
+                                activityIsOpen = rawAct?.isOpen ?? true;
+                                activityCancelled = rawAct?.cancelled ?? false;
+                                activityWinningChoice = rawAct?.winningChoice;
+
+                                // 如果活动已结束且有 winningChoice（可能为 0），且当前票的选项等于中奖选项，尝试计算该票的中奖金额
+                                if (!activityIsOpen && activityWinningChoice !== undefined && activityWinningChoice !== null && activityWinningChoice !== '') {
+                                    try {
+                                        // 只为属于中奖选项的票计算金额
+                                        if (Number(activityWinningChoice) === choiceIndex) {
+                                            const totalWinning = (choiceTotalsRaw && choiceTotalsRaw[Number(activityWinningChoice)]) || '0';
+                                            const totalWinningBN = web3.utils.toBN(totalWinning || '0');
+                                            // 使用活动的总额度(prizeAmount)减去剩余额度(remainingAmount)作为总奖池（已售出额度）
+                                            const prizeAmountBN = web3.utils.toBN(rawAct?.prizeAmount || rawAct?.totalPool || '0');
+                                            const remainingBN = web3.utils.toBN(rawAct?.remainingAmount || '0');
+                                            let totalPoolBN = prizeAmountBN.sub(remainingBN);
+                                            if (totalPoolBN.isNeg && totalPoolBN.lt(web3.utils.toBN('0'))) totalPoolBN = web3.utils.toBN('0');
+                                            const priceBN = web3.utils.toBN(priceRaw || '0');
+                                            let prizeBN = web3.utils.toBN('0');
+                                            if (!totalWinningBN.isZero()) {
+                                                // 中奖金额 = 本彩票投注额 / 正确选项投注额 * 总奖池（已售出额度）
+                                                prizeBN = priceBN.mul(totalPoolBN).div(totalWinningBN);
+                                            }
+                                            precomputedPrize = web3.utils.fromWei(prizeBN, 'ether');
+                                        }
+                                    } catch (e) {
+                                        console.warn('计算中奖金额失败', activityId, e);
+                                    }
+                                }
+
+                                // 如果活动已结束并且正确选项没有人选（金额为0），则标记活动取消
+                                if (!activityIsOpen && choiceTotalsRaw && choiceTotalsRaw[Number(activityWinningChoice)] === '0') {
+                                    activityCancelled = true;
+                                }
+                            } else {
+                                // 如果没有缓存的活动，回退到较慢的 RPC 获取（保持兼容）
+                                const raw = await lotteryContract.methods.getActivity(activityId).call();
+                                activityDescription = raw?.description || '';
+                                activityChoices = raw?.choices || [];
+                                activityIsOpen = raw?.isOpen ?? true;
+                                activityCancelled = raw?.cancelled ?? false;
+                                activityWinningChoice = raw?.winningChoice;
+                            }
+                        } catch (e) {
+                            console.warn('读取活动信息失败', activityId, e);
+                        }
+
+                        const selectedOptionLabel = String.fromCharCode(65 + choiceIndex) || String(choiceIndex + 1);
+                        const selectedOptionContent = activityChoices[choiceIndex] || '';
+
+                        tickets.push({
+                            id: tid,
+                            price,
+                            priceRaw,
+                            activityId,
+                            activityDescription,
+                            choiceIndex,
+                            choiceLabel: selectedOptionLabel,
+                            choiceContent: selectedOptionContent,
+                            isOpen: activityIsOpen,
+                            cancelled: activityCancelled,
+                            winningChoice: activityWinningChoice,
+                            prize: precomputedPrize,
+                            isListed: isListed, 
+                            listedPrice: listedPrice 
+                        });
+                    } catch (e) {
+                        console.warn('处理 tokenId 失败', tid, e);
+                        continue;
+                    }
+                }
+
+                setMyTickets(tickets);
+            } catch (e) {
+                console.error("获取彩票信息失败:", e);
+            }
+        }
+    };
+    useEffect(() => {
         fetchMyTickets();
     }, [account]);
 
@@ -260,6 +297,19 @@ const MyTicketsPage: React.FC = () => {
                     <div key={index} style={{ border: '1px solid #ddd', padding: 12, marginBottom: 12 }}>
                         <div>
                             <strong>彩票 #{ticket.id}</strong>
+                            {ticket.isListed && (
+                                <span style={{ 
+                                    marginLeft: 12, 
+                                    color: '#007BFF', 
+                                    fontWeight: 'bold', 
+                                    backgroundColor: '#e7f3ff', 
+                                    padding: '2px 6px', 
+                                    borderRadius: 4, 
+                                    fontSize: '0.9em' 
+                                }}>
+                                    挂单出售中: {ticket.listedPrice} ZJU
+                                </span>
+                            )}
                         </div>
                         <div style={{ marginTop: 6 }}>
                             <span style={{ color: 'green', fontWeight: 700 }}>{ticket.price} ZJU</span>
@@ -269,6 +319,24 @@ const MyTicketsPage: React.FC = () => {
                         <div style={{ marginTop: 8 }}>
                             <strong>已选:</strong> {ticket.choiceLabel}. {ticket.choiceContent}
                         </div>
+                        {ticket.isListed && (
+                            <div style={{ marginTop: 12 }}>
+                                <button 
+                                    onClick={() => handleDelistTicket(ticket.id)}
+                                    disabled={processingTicketId === ticket.id} // 如果正在处理这张票，则禁用按钮
+                                    style={{
+                                        padding: '6px 12px',
+                                        backgroundColor: '#dc3545',
+                                        color: 'white',
+                                        border: 'none',
+                                        borderRadius: 4,
+                                        cursor: 'pointer'
+                                    }}
+                                >
+                                    {processingTicketId === ticket.id ? '处理中...' : '取消挂单'}
+                                </button>
+                            </div>
+                        )}
                     </div>
                 ))}
 

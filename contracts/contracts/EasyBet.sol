@@ -37,7 +37,7 @@ contract EasyBet {
         uint256 prizeAmount;        // 奖金总额（购买上限）
         uint256 deadline;           // 截止时间
         bool isOpen;                // 项目是否开放
-        bool cancelled;            // 项目是否被取消（发起者退奖）
+        bool cancelled;             // 项目是否被取消（发起者退奖）
         uint256 winningChoice;      // 获胜选项
         uint256 totalPool;          // 总奖池（实际购买金额总和）
         uint256 remainingAmount;    // 剩余可购买金额
@@ -189,6 +189,7 @@ contract EasyBet {
         // 立即关闭活动并分配/退还金额（即时分配）
         activity.isOpen = false;
         activity.winningChoice = winningChoice;
+        _delistAllActivityTickets(activityId);
 
         // 快照当前奖池和中奖选项总投注
         uint256 snapshotPool = activity.totalPool;
@@ -283,8 +284,9 @@ contract EasyBet {
 
         activity.isOpen = false;
         activity.cancelled = true;
+        _delistAllActivityTickets(activityId);
 
-        // 立即对所有票进行退款（避免依赖外部调用 claimRefund）
+        // 立即对所有票进行退款
         uint256 choicesLen = activity.choices.length;
         for (uint256 ci = 0; ci < choicesLen; ci++) {
             uint256[] storage tokens = activityChoiceTickets[activityId][ci];
@@ -331,6 +333,16 @@ contract EasyBet {
     }
 
     // TODO add any logic if you want
+    
+    function _delistAllActivityTickets(uint256 activityId) private {
+        uint256 choicesLen = activities[activityId].choices.length;
+        for (uint256 ci = 0; ci < choicesLen; ci++) {
+            uint256[] storage tokens = activityChoiceTickets[activityId][ci];
+            for (uint256 ti = 0; ti < tokens.length; ti++) {
+                lotteryNFT.forceDelistTicket(tokens[ti]);
+            }
+        }
+    }
     
     /**
      * @dev 接收ETH资金

@@ -1,11 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import { lotteryNFTContract, myERC20Contract, web3 } from "../../utils/contracts";
+import { lotteryContract, lotteryNFTContract, myERC20Contract, web3 } from "../../utils/contracts";
 
 const BuyListedTicketPage: React.FC = () => {
     const [account, setAccount] = useState<string>('');
     const [listedTickets, setListedTickets] = useState<any[]>([]);
     const [tokenId, setTokenId] = useState<string>('');
     const [accountBalance, setAccountBalance] = useState<string>('0');
+    
+    const [allActivities, setAllActivities] = useState<any[]>([]);
+    const [sortOption, setSortOption] = useState<string>('0');
+    const [filterActivityId, setFilterActivityId] = useState<string>('0');
+    const [filterChoiceIndex, setFilterChoiceIndex] = useState<string>('all');
 
     useEffect(() => {
         const initCheckAccounts = async () => {
@@ -35,37 +40,87 @@ const BuyListedTicketPage: React.FC = () => {
         };
         if (account) getBalance();
     }, [account]);
+    
+    useEffect(() => {
+        const fetchAllActivities = async () => {
+            if (!lotteryContract) return;
+            try {
+                const counter = await lotteryContract.methods.activityCounter().call();
+                const n = Number(counter || 0);
+                const activities = [];
+                if (n > 0) {
+                    const ids = Array.from({ length: n }, (_, i) => i + 1);
+                    const raws = await Promise.all(ids.map(id => lotteryContract.methods.getActivity(id).call()));
+                    for (let i = 0; i < raws.length; i++) {
+                        if (raws[i] && raws[i].isOpen) {
+                            activities.push({ id: ids[i], ...raws[i] });
+                        }
+                    }
+                }
+                setAllActivities(activities);
+            } catch (e) {
+                console.error("获取活动列表失败:", e);
+            }
+        };
+        fetchAllActivities();
+    }, []);
 
-    // 获取挂单列表
     const fetchListedTickets = async () => {
         try {
-            // 调用合约获取挂单列表
             console.log("获取挂单列表");
-            if (!lotteryNFTContract) return;
+            if (!lotteryNFTContract || !lotteryContract) return;
+            
+            const activityIdParam = filterActivityId;
+            const choiceIndexParam = filterChoiceIndex === 'all' ? 11 : filterChoiceIndex;
+            const sortByParam = sortOption;
 
-            // getAllListedTickets 返回 uint256[]
-            const ids: string[] = await lotteryNFTContract.methods.getAllListedTickets().call();
-            const listed: any[] = [];
-            for (const idStr of ids) {
+            const ids: string[] = await lotteryNFTContract.methods.getSortedAndFilteredTickets(activityIdParam, choiceIndexParam, sortByParam).call();
+            
+            const ticketDetailsPromises = ids.map(async (idStr) => {
                 try {
                     const id = Number(idStr);
-                    // 获取挂单价格（wei）
-                    const priceWei = await lotteryNFTContract.methods.getTicketListedPrice(id).call();
-                    const price = web3.utils.fromWei(String(priceWei), 'ether');
-                    // 获取卖家地址
-                    const seller = await lotteryNFTContract.methods.ownerOf(id).call();
-                    listed.push({ id, price, seller });
+                    const listedPriceWei = await lotteryNFTContract.methods.ticketListedPrice(id).call();
+                    const listedPrice = web3.utils.fromWei(String(listedPriceWei), 'ether');
+
+                    const ticketInfo = await lotteryNFTContract.methods.getTicketInfo(id).call();
+                    const activityId = Number(ticketInfo.activityId);
+                    const choiceIndex = Number(ticketInfo.choiceIndex);
+                    const faceValue = web3.utils.fromWei(String(ticketInfo.price), 'ether');
+
+                    const activityInfo = await lotteryContract.methods.getActivity(activityId).call();
+                    const activityDescription = activityInfo.description;
+                    const choiceContent = activityInfo.choices[choiceIndex] || '';
+                    const choiceLabel = String.fromCharCode(65 + choiceIndex);
+
+                    return { 
+                        id, 
+                        listedPrice, 
+                        faceValue,
+                        activityId,
+                        activityDescription,
+                        choiceIndex,
+                        choiceLabel,
+                        choiceContent
+                    };
                 } catch (e) {
-                    console.warn('读取挂单项失败', idStr, e);
+                    console.warn('读取挂单项详情失败', idStr, e);
+                    return null;
                 }
-            }
-            setListedTickets(listed);
+            });
+
+            const detailedTickets = (await Promise.all(ticketDetailsPromises)).filter(t => t !== null);
+            setListedTickets(detailedTickets);
         } catch (e) {
             console.error("获取挂单列表失败:", e);
+            setListedTickets([]);
         }
     };
+    
+    useEffect(() => {
+        fetchListedTickets();
+    }, [sortOption, filterActivityId, filterChoiceIndex]);
 
-    // 购买挂单的彩票
+
     const buyListedTicket = async () => {
         if (!account) {
             alert('请先连接钱包');
@@ -73,26 +128,29 @@ const BuyListedTicketPage: React.FC = () => {
         }
 
         if (!tokenId) {
-            alert('请输入彩票ID');
+            alert('请输入或选择一个彩票ID');
             return;
         }
 
         try {
-            // 购买使用 ZJU 代币：首先找到选中的挂单信息（seller, price）
             const selected = listedTickets.find(t => String(t.id) === String(tokenId));
             if (!selected) {
-                alert('未找到对应挂单，请刷新列表');
+                alert('未在当前列表中找到对应挂单，请刷新列表');
                 return;
             }
-
-            if (!selected.seller || !selected.price) {
+            
+            if (!selected.listedPrice) {
                 alert('挂单信息不完整，无法完成购买');
                 return;
             }
 
-            const priceWei = web3.utils.toWei(String(selected.price), 'ether');
+            if (selected.listedPrice > parseFloat(accountBalance)) {
+                alert('ZJU代币余额不足，无法购买');
+                return;
+            }
 
-            // 使用合约原子的 ERC20 购买流程：先 approve 本合约（lotteryNFTContract）花费 priceWei，然后调用 buyListedTicketWithERC20
+            const priceWei = web3.utils.toWei(String(selected.listedPrice), 'ether');
+
             if (!myERC20Contract || !lotteryNFTContract) {
                 alert('合约未加载');
                 return;
@@ -100,7 +158,6 @@ const BuyListedTicketPage: React.FC = () => {
 
             const spender = lotteryNFTContract.options.address;
             try {
-                // approve 本合约从买家转账给卖家
                 await myERC20Contract.methods.approve(spender, priceWei).send({ from: account });
             } catch (e) {
                 console.error('approve 失败', e);
@@ -110,12 +167,10 @@ const BuyListedTicketPage: React.FC = () => {
 
             try {
                 await lotteryNFTContract.methods.buyListedTicketWithERC20(myERC20Contract.options.address, tokenId).send({ from: account });
-                alert('购买成功，NFT 已转入您的账户（若链上交易成功）');
-                // 刷新挂单列表
+                alert('购买成功，彩票已转入您的账户');
                 await fetchListedTickets();
             } catch (e) {
                 console.error('购买失败', e);
-                // e 可能是任意类型，使用 any 以安全访问 message，或转为字符串
                 alert('购买失败：' + (((e as any)?.message) || String(e)));
             }
         } catch (error) {
@@ -123,48 +178,114 @@ const BuyListedTicketPage: React.FC = () => {
             alert('购买失败');
         }
     };
+    
+    const handleActivityFilterChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+        setFilterActivityId(e.target.value);
+        setFilterChoiceIndex('all');
+    };
+
+    const selectedActivityChoices = filterActivityId !== '0' 
+        ? allActivities.find(act => String(act.id) === filterActivityId)?.choices || [] 
+        : [];
 
     return (
         <div className="page">
             <h1>购买挂单出售的彩票</h1>
-                <div className="account-info">
+            <div className="account-info">
                 <p>当前账户: {account || '未连接'}</p>
                 {account && <div>ZJU 余额: {accountBalance}</div>}
             </div>
             
+            <div className="form-group">
+                <h3>想要购买的彩票ID:</h3>
+                <input
+                    type="text"
+                    value={tokenId}
+                    onChange={(e) => setTokenId(e.target.value)}
+                    placeholder="输入或从下方列表选择彩票ID"
+                />
+            </div>
+            
+            <button onClick={buyListedTicket}>购买彩票</button>
+            
             <div className="buy-listed-form">
                 <h2>购买挂单中的彩票</h2>
                 
-                <button onClick={fetchListedTickets}>刷新挂单列表</button>
+                <div style={{ display: 'flex', gap: '20px', margin: '20px 0', alignItems: 'center' }}>
+                    <div>
+                        <label>排序方式: </label>
+                        <select value={sortOption} onChange={(e) => setSortOption(e.target.value)}>
+                            <option value="0">性价比 (高到低)</option>
+                            <option value="1">价格 (低到高)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label>筛选活动: </label>
+                        <select value={filterActivityId} onChange={handleActivityFilterChange}>
+                            <option value="0">所有活动</option>
+                            {allActivities.map(act => (
+                                <option key={act.id} value={act.id}>
+                                    #{act.id}: {act.description}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                    <div>
+                        <label>筛选选项: </label>
+                        <select 
+                            value={filterChoiceIndex} 
+                            onChange={(e) => setFilterChoiceIndex(e.target.value)}
+                            disabled={filterActivityId === '0'}
+                        >
+                            <option value="all">所有选项</option>
+                            {selectedActivityChoices.map((choice: string, index: number) => (
+                                <option key={index} value={index}>
+                                    {String.fromCharCode(65 + index)}. {choice}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                    <button onClick={fetchListedTickets}>刷新挂单列表</button>
+                </div>
                 
                 <div className="listed-tickets">
                     <h3>当前挂单</h3>
                     {listedTickets.length > 0 ? (
-                        <ul>
+                        <div>
                             {listedTickets.map((ticket, index) => (
-                                <li key={index}>
-                                    <p>彩票ID: {ticket.id}</p>
-                                    <p>价格: {ticket.price}</p>
-                                    <button onClick={() => setTokenId(ticket.id)}>选择购买</button>
-                                </li>
+                                <div key={index} style={{ border: '1px solid #ddd', padding: 12, marginBottom: 12 }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                        <div>
+                                            <strong>彩票 #{ticket.id}</strong>
+                                            <span style={{
+                                                marginLeft: 12,
+                                                color: '#007BFF',
+                                                fontWeight: 'bold',
+                                                backgroundColor: '#e7f3ff',
+                                                padding: '2px 6px',
+                                                borderRadius: 4,
+                                                fontSize: '0.9em'
+                                            }}>
+                                                挂单出售中: {ticket.listedPrice} ZJU
+                                            </span>
+                                        </div>
+                                        <button onClick={() => setTokenId(String(ticket.id))}>选择购买</button>
+                                    </div>
+                                    <div style={{ marginTop: 6 }}>
+                                        <span style={{ color: 'green', fontWeight: 700 }}>{ticket.faceValue} ZJU</span>
+                                    </div>
+                                    <div style={{ marginTop: 8 }}><strong>活动 #{ticket.activityId}</strong></div>
+                                    {ticket.activityDescription && <div style={{ marginTop: 6 }}>{ticket.activityDescription}</div>}
+                                    <div style={{ marginTop: 8 }}>
+                                        <strong>已选:</strong> {ticket.choiceLabel}. {ticket.choiceContent}
+                                    </div>
+                                </div>
                             ))}
-                        </ul>
+                        </div>
                     ) : (
-                        <p>暂无挂单</p>
+                        <p>暂无符合条件的挂单</p>
                     )}
                 </div>
-                
-                <div className="form-group">
-                    <label>彩票ID:</label>
-                    <input
-                        type="text"
-                        value={tokenId}
-                        onChange={(e) => setTokenId(e.target.value)}
-                        placeholder="输入要购买的彩票ID"
-                    />
-                </div>
-                
-                <button onClick={buyListedTicket}>购买彩票</button>
             </div>
         </div>
     );

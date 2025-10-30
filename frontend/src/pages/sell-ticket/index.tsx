@@ -179,14 +179,12 @@ const SellTicketPage: React.FC = () => {
                 // 调用 NFT 合约上的 listTicket(tokenId, priceWei) 上链挂单（以 ZJU 计价）
                 try {
                     await lotteryNFTContract.methods.listTicket(tokenId, priceWei).send({ from: account });
-                    alert('已在链上创建挂单（listTicket）');
+                    alert('已在链上创建挂单');
                 } catch (e) {
                     console.warn('调用 listTicket 失败，可能合约不实现此方法或参数不对', e);
                     // 若失败，仍提示用户已授权 NFT 给市场合约，需要后续处理
                 }
             }
-
-            alert('已授权 NFT 给市场合约，请在后端/合约中完成挂单流程（价格以 ZJU 计价）');
         } catch (error) {
             console.error("挂单失败:", error);
             alert('挂单失败');
@@ -198,7 +196,6 @@ const SellTicketPage: React.FC = () => {
             <h1>挂单出售彩票</h1>
             <div className="account-info">
                 <p>当前账户: {account || '未连接'}</p>
-                {account && <div>ZJU 余额: {accountBalance}</div>}
             </div>
             
             <div className="sell-ticket-form">

@@ -8,6 +8,7 @@ const BuyTicketPage: React.FC = () => {
     const [selectedActivity, setSelectedActivity] = useState<string>('');
     const [selectedChoice, setSelectedChoice] = useState<string>('');
     const [price, setPrice] = useState<string>('');
+    const [accountBalance, setAccountBalance] = useState<string>('0');
 
     useEffect(() => {
         const initCheckAccounts = async () => {
@@ -28,6 +29,20 @@ const BuyTicketPage: React.FC = () => {
 
         initCheckAccounts();
     }, []);
+
+    useEffect(() => {
+        const getBalance = async () => {
+            if (myERC20Contract && account) {
+                try {
+                    const ab = await myERC20Contract.methods.balanceOf(account).call();
+                    setAccountBalance(web3.utils.fromWei(ab, 'ether'));
+                } catch (e) {
+                    console.error('获取余额失败', e);
+                }
+            }
+        }
+        if (account) getBalance();
+    }, [account]);
 
     useEffect(() => {
         // 初始加载活动
@@ -99,8 +114,21 @@ const BuyTicketPage: React.FC = () => {
         }
 
         if (!price || parseFloat(price) <= 0) {
-            alert('请输入有效价格');
+            alert('请输入有效价格，价格必须为正数');
             return;
+        }
+
+        if (parseFloat(price) > parseFloat(accountBalance)) {
+            alert(`购买失败：您的出价 ${price} ZJU 超过了您的账户余额 ${accountBalance} ZJU。`);
+            return;
+        }
+
+        const activity = activities.find(a => String(a.id) === String(selectedActivity));
+        if (activity) {
+            if (parseFloat(price) > parseFloat(activity.remainingAmount)) {
+                alert(`购买失败：您的出价 ${price} ZJU 超过了该活动的剩余额度 ${activity.remainingAmount} ZJU。`);
+                return;
+            }
         }
 
         try {
@@ -146,7 +174,8 @@ const BuyTicketPage: React.FC = () => {
         <div className="page">
             <h1>购买彩票</h1>
             <div className="account-info">
-                <p>当前账户: {account}</p>
+                <p>当前账户: {account || '未连接'}</p>
+                {account && <div>ZJU 余额: {accountBalance}</div>}
             </div>
             
             <div className="buy-ticket-form">

@@ -8,27 +8,28 @@ async function main() {
   const EasyBet = await ethers.getContractFactory("EasyBet");
   
   // 部署彩票NFT合约
-  console.log("Deploying LotteryNFT contract...");
+  // console.log("Deploying LotteryNFT contract...");
   const lotteryNFT = await LotteryNFT.deploy(deployer.address);
   await lotteryNFT.deployed();
   console.log(`LotteryNFT deployed to: ${lotteryNFT.address}`);
 
   // 部署代币合约
-  console.log("Deploying MyERC20 contract...");
+  // console.log("Deploying MyERC20 contract...");
   const myERC20 = await MyERC20.deploy("ZJU Token", "ZJU");
   await myERC20.deployed();
   console.log(`MyERC20 deployed to: ${myERC20.address}`);
 
   // 部署主合约，传入彩票NFT合约地址和 ZJU 代币合约地址（EasyBet 构造函数需要两个地址）
-  console.log("Deploying EasyBet contract...");
+  // console.log("Deploying EasyBet contract...");
   const easyBet = await EasyBet.deploy(lotteryNFT.address, myERC20.address);
   await easyBet.deployed();
   console.log(`EasyBet deployed to: ${easyBet.address}`);
-  // 将 EasyBet 设置为 LotteryNFT 的授权铸造者
-  console.log(`Setting EasyBet as minter on LotteryNFT...`);
-  const tx = await lotteryNFT.setMinter(easyBet.address, true);
+
+  // 授权 EasyBet 合约在 LotteryNFT 上进行操作（铸造和强制下架）
+  // console.log(`Authorizing EasyBet on LotteryNFT...`);
+  const tx = await lotteryNFT.authorizeEasyBet(easyBet.address);
   await tx.wait();
-  console.log(`EasyBet set as minter on LotteryNFT`);
+  // console.log(`EasyBet has been authorized on LotteryNFT`);
   
   console.log("Deployment completed successfully!");
 }
