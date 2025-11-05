@@ -1,7 +1,0 @@
-Remove-Item alias:curl
-
-curl --data '{\"jsonrpc\":\"2.0\",\"method\":\"eth_coinbase\",\"id\":0}' localhost:8545
-
-npm install -D hardhat@2  # 下载Hardhat 2版本
-npx hardhat compile       # 编译合约
-npx hardhat run scripts/deploy.ts --network ganache  # 部署合约
